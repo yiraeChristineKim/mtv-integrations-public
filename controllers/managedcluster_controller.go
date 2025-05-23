@@ -47,23 +47,26 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, managedCluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if !controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
-		controllerutil.AddFinalizer(managedCluster, ManagedClusterFinalizer)
-		if err := r.Update(ctx, managedCluster); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil // Requeue to ensure the finalizer is added
-	}
 	managedClusterMTV := managedClusterMTVName(managedCluster.GetName())
 
 	// Check if the ManagedCluster is being deleted
 	// If it is, clean up the resources created by this controller
 	// and remove the finalizer
-	if managedCluster.GetObjectMeta().GetDeletionTimestamp() != nil {
+	if (managedCluster.GetObjectMeta().GetDeletionTimestamp() != nil ||
+		managedCluster.GetLabels()[LabelCNVOperatorInstall] != "true") &&
+		controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
 		return ctrl.Result{}, r.cleanupManagedClusterResources(ctx, managedCluster)
 	}
 
 	if managedCluster.GetLabels()[LabelCNVOperatorInstall] == "true" {
+		original := managedCluster.DeepCopy()
+		if !controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
+			controllerutil.AddFinalizer(managedCluster, ManagedClusterFinalizer)
+			if err := r.Patch(ctx, managedCluster, client.MergeFrom(original)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil // Requeue to ensure the finalizer is added
+		}
 
 		// ManagedServiceAccount Exists
 		managedServiceAccount := &auth.ManagedServiceAccount{}
@@ -90,7 +93,7 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 
 		if err := r.reconcileResource(ctx,
-			ManagedServiceAccountsGVR,
+			ClusterPermissionsGVR,
 			managedCluster.Name, clusterPermissionPayload(managedCluster)); err != nil {
 			log.Error(err, "Failed to reconcile Provider")
 			return ctrl.Result{}, err
@@ -203,7 +206,7 @@ func deleteResource(ctx context.Context, dynamicClient dynamic.Interface, gvr sc
 
 func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Context, managedCluster *clusterv1.ManagedCluster) error {
 	log := log.FromContext(ctx)
-	log.Info("ManagedCluster is being deleted")
+	log.Info("The ManagedCluster is no longer labeled for CNV operator installation, cleaning up resources")
 	managedClusterName := managedCluster.GetName()
 	// Delete the following resources if they exist:
 	//  * ClusterPermission
@@ -227,12 +230,15 @@ func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Co
 		managedClusterName); err != nil {
 		return err
 	}
-	if ok := controllerutil.RemoveFinalizer(managedCluster, ManagedClusterFinalizer); !ok {
+	original := managedCluster.DeepCopy()
+	if !controllerutil.RemoveFinalizer(managedCluster, ManagedClusterFinalizer) {
 		log.Info("Finalizer not found, nothing to remove")
-	}
-	// Update the ManagedCluster to remove the finalizer
-	if err := r.Update(ctx, managedCluster); err != nil {
-		return err
+	} else {
+		patch := client.MergeFrom(original)
+		if err := r.Patch(ctx, managedCluster, patch); err != nil {
+			return err
+		}
+		log.Info("Finalizer removed")
 	}
 	return nil
 }

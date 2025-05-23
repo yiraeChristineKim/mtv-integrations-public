@@ -44,14 +44,14 @@ func clusterPermissionPayload(managedCluster *clusterv1.ManagedCluster) map[stri
 		"metadata": map[string]interface{}{
 			"name":      managedClusterMTV,
 			"namespace": managedCluster.Name,
-			"ownerReferences": []map[string]interface{}{
+			/*"ownerReferences": []map[string]interface{}{
 				map[string]interface{}{
 					"kind":       "ManagedCluster",
 					"name":       managedCluster.Name,
 					"uid":        managedCluster.UID,
 					"apiVersion": "cluster.open-cluster-management.io/v1",
 				},
-			},
+			},*/
 		},
 		"spec": map[string]interface{}{
 			"clusterRoleBinding": map[string]interface{}{
