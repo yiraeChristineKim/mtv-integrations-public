@@ -1,9 +1,20 @@
 package controllers
 
 import (
+	"time"
+
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
 )
+
+const ManagedClusterFinalizer = "mtv-integrations.open-cluster-management.io/resource-cleanup"
+const LabelCNVOperatorInstall = "acm/cnv-operator-install"
+
+var TokenWaitDuration = 4 * time.Second
+
+var ClusterPermissionsGVR = generateGVR("rbac.open-cluster-management.io", "v1alpha1", "clusterpermissions")
+var ManagedServiceAccountsGVR = generateGVR("authentication.open-cluster-management.io", "v1beta1", "managedserviceaccounts")
+var ProvidersGVR = generateGVR("forklift.konveyor.io", "v1beta1", "providers")
 
 func providerPayload(managedCluster *clusterv1.ManagedCluster) map[string]interface{} {
 	managedClusterMTV := managedCluster.Name + "-mtv"

@@ -27,12 +27,16 @@ import (
 type ManagedClusterReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
-	DynamicClient *dynamic.DynamicClient
+	DynamicClient dynamic.Interface
 }
 
-//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch
+//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/status,verbs=get
 //+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/finalizers,verbs=update
+//+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts/status,verbs=get;update;patch
 
 func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
@@ -43,16 +47,30 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if err := r.Get(ctx, req.NamespacedName, managedCluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	ManagedClusterMTV := managedCluster.Name + "-mtv"
+	if !controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
+		controllerutil.AddFinalizer(managedCluster, ManagedClusterFinalizer)
+		if err := r.Update(ctx, managedCluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil // Requeue to ensure the finalizer is added
+	}
+	managedClusterMTV := managedClusterMTVName(managedCluster.GetName())
 
-	if managedCluster.GetLabels()["acm/cnv-operator-install"] == "true" {
+	// Check if the ManagedCluster is being deleted
+	// If it is, clean up the resources created by this controller
+	// and remove the finalizer
+	if managedCluster.GetObjectMeta().GetDeletionTimestamp() != nil {
+		return ctrl.Result{}, r.cleanupManagedClusterResources(ctx, managedCluster)
+	}
+
+	if managedCluster.GetLabels()[LabelCNVOperatorInstall] == "true" {
 
 		// ManagedServiceAccount Exists
 		managedServiceAccount := &auth.ManagedServiceAccount{}
-		if err := r.Get(ctx, types.NamespacedName{Name: ManagedClusterMTV, Namespace: managedCluster.Name}, managedServiceAccount); errors.IsNotFound(err) {
+		if err := r.Get(ctx, types.NamespacedName{Name: managedClusterMTV, Namespace: managedCluster.Name}, managedServiceAccount); errors.IsNotFound(err) {
 			log.Info("ManagedServiceAccount not found")
 
-			managedServiceAccount.Name = ManagedClusterMTV
+			managedServiceAccount.Name = managedClusterMTV
 			managedServiceAccount.Namespace = managedCluster.Name
 			managedServiceAccount.Spec.Rotation.Enabled = true
 			managedServiceAccount.Spec.Rotation.Validity = metav1.Duration{
@@ -64,15 +82,15 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 			log.Info("Created successfully", "ManagedServiceAccount", managedServiceAccount.Name)
 
-			return ctrl.Result{RequeueAfter: time.Second * 2}, nil
+			return ctrl.Result{RequeueAfter: TokenWaitDuration}, nil
 
 		} else if err != nil {
-			log.Error(err, "Failed to get ManagedServiceAccount")
+			log.Error(err, "Failed to retrieve ManagedServiceAccount")
 			return ctrl.Result{}, err
 		}
 
 		if err := r.reconcileResource(ctx,
-			generateGVR("rbac.open-cluster-management.io", "v1alpha1", "clusterpermissions"),
+			ManagedServiceAccountsGVR,
 			managedCluster.Name, clusterPermissionPayload(managedCluster)); err != nil {
 			log.Error(err, "Failed to reconcile Provider")
 			return ctrl.Result{}, err
@@ -80,7 +98,7 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 		secret := &corev1.Secret{}
 		namespacedName := types.NamespacedName{
-			Name:      ManagedClusterMTV,
+			Name:      managedClusterMTV,
 			Namespace: managedCluster.Name,
 		}
 
@@ -108,18 +126,17 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			}
 		} else {
 			log.Info("ManagedServiceAccount secret is not ready")
-			return ctrl.Result{RequeueAfter: time.Second * 2}, nil // Wait for the token to be created
+			return ctrl.Result{RequeueAfter: TokenWaitDuration}, nil // Wait for the token to be created
 		}
 
 		// The plan is reconciled last to make sure it synchronizes with the Provider secret
 		if err := r.reconcileResource(
-			ctx, generateGVR("forklift.konveyor.io", "v1beta1", "providers"),
+			ctx, ProvidersGVR,
 			managedCluster.Name, providerPayload(managedCluster)); err != nil {
 			log.Error(err, "Failed to reconcile Provider")
 			return ctrl.Result{}, err
 		}
 	}
-
 	return ctrl.Result{}, nil
 }
 
@@ -134,9 +151,10 @@ func (r *ManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr schema.GroupVersionResource, managedClusterName string, payload map[string]interface{}) error {
 	log := log.FromContext(ctx)
 	resourceKind := gvr.Resource
-	ManagedClusterMTV := managedClusterName + "-mtv"
-
-	_, err := r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Get(ctx, ManagedClusterMTV, metav1.GetOptions{})
+	_, err := r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Get(
+		ctx,
+		managedClusterMTVName(managedClusterName),
+		metav1.GetOptions{})
 	if errors.IsNotFound(err) {
 		log.Info("Create " + resourceKind)
 
@@ -155,12 +173,70 @@ func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr sc
 
 		_, err = r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Create(ctx, unstructuredPayload, metav1.CreateOptions{})
 		if err != nil {
-			log.Error(err, "Failed to create"+resourceKind)
+			log.Error(err, "Failed to create resource", "kind", resourceKind)
 			return err
 		}
 		log.Info("Created successfully", resourceKind, managedClusterName)
 	} else if err != nil {
-		return nil
+		return err
 	}
 	return nil
+}
+
+func deleteResource(ctx context.Context, dynamicClient dynamic.Interface, gvr schema.GroupVersionResource, managedClusterName string) error {
+	log := log.FromContext(ctx)
+	resourceKind := gvr.Resource
+	managedClusterMTV := managedClusterMTVName(managedClusterName)
+
+	err := dynamicClient.Resource(gvr).Namespace(managedClusterName).Delete(ctx, managedClusterMTV, metav1.DeleteOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Resource not found, nothing to delete", resourceKind, managedClusterMTV)
+			return nil
+		}
+		log.Error(err, "Failed to delete "+resourceKind)
+		return err
+	}
+	log.Info("Deleted successfully", resourceKind, managedClusterMTV)
+	return nil
+}
+
+func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Context, managedCluster *clusterv1.ManagedCluster) error {
+	log := log.FromContext(ctx)
+	log.Info("ManagedCluster is being deleted")
+	managedClusterName := managedCluster.GetName()
+	// Delete the following resources if they exist:
+	//  * ClusterPermission
+	//  * ManagedServiceAccount
+	//  * Provider
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ClusterPermissionsGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ManagedServiceAccountsGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ProvidersGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	if ok := controllerutil.RemoveFinalizer(managedCluster, ManagedClusterFinalizer); !ok {
+		log.Info("Finalizer not found, nothing to remove")
+	}
+	// Update the ManagedCluster to remove the finalizer
+	if err := r.Update(ctx, managedCluster); err != nil {
+		return err
+	}
+	return nil
+}
+
+func managedClusterMTVName(name string) string {
+	return name + "-mtv"
 }
