@@ -13,7 +13,10 @@ const LabelCNVOperatorInstall = "acm/cnv-operator-install"
 var TokenWaitDuration = 4 * time.Second
 
 var ClusterPermissionsGVR = generateGVR("rbac.open-cluster-management.io", "v1alpha1", "clusterpermissions")
-var ManagedServiceAccountsGVR = generateGVR("authentication.open-cluster-management.io", "v1beta1", "managedserviceaccounts")
+var ManagedServiceAccountsGVR = generateGVR(
+	"authentication.open-cluster-management.io",
+	"v1beta1",
+	"managedserviceaccounts")
 var ProvidersGVR = generateGVR("forklift.konveyor.io", "v1beta1", "providers")
 
 func providerPayload(managedCluster *clusterv1.ManagedCluster) map[string]interface{} {
@@ -44,14 +47,6 @@ func clusterPermissionPayload(managedCluster *clusterv1.ManagedCluster) map[stri
 		"metadata": map[string]interface{}{
 			"name":      managedClusterMTV,
 			"namespace": managedCluster.Name,
-			/*"ownerReferences": []map[string]interface{}{
-				map[string]interface{}{
-					"kind":       "ManagedCluster",
-					"name":       managedCluster.Name,
-					"uid":        managedCluster.UID,
-					"apiVersion": "cluster.open-cluster-management.io/v1",
-				},
-			},*/
 		},
 		"spec": map[string]interface{}{
 			"clusterRoleBinding": map[string]interface{}{
