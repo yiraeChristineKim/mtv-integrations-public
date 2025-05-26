@@ -1,0 +1,248 @@
+package controllers
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	auth "open-cluster-management.io/managed-serviceaccount/apis/authentication/v1beta1"
+)
+
+// ManagedClusterReconciler reconciles a ManagedCluster object
+type ManagedClusterReconciler struct {
+	client.Client
+	Scheme        *runtime.Scheme
+	DynamicClient dynamic.Interface
+}
+
+//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch
+//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/status,verbs=get
+//+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/finalizers,verbs=update
+//+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts/status,verbs=get;update;patch
+
+func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
+	log.Info("Reconciling ManagedCluster", "name", req.NamespacedName)
+
+	// Fetch the ManagedCluster instance
+	managedCluster := &clusterv1.ManagedCluster{}
+	if err := r.Get(ctx, req.NamespacedName, managedCluster); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	managedClusterMTV := managedClusterMTVName(managedCluster.GetName())
+
+	// Check if the ManagedCluster is being deleted
+	// If it is, clean up the resources created by this controller
+	// and remove the finalizer
+	if (managedCluster.GetObjectMeta().GetDeletionTimestamp() != nil ||
+		managedCluster.GetLabels()[LabelCNVOperatorInstall] != "true") &&
+		controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
+		return ctrl.Result{}, r.cleanupManagedClusterResources(ctx, managedCluster)
+	}
+
+	if managedCluster.GetLabels()[LabelCNVOperatorInstall] == "true" {
+		original := managedCluster.DeepCopy()
+		if !controllerutil.ContainsFinalizer(managedCluster, ManagedClusterFinalizer) {
+			controllerutil.AddFinalizer(managedCluster, ManagedClusterFinalizer)
+			if err := r.Patch(ctx, managedCluster, client.MergeFrom(original)); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{}, nil // Requeue to ensure the finalizer is added
+		}
+
+		// ManagedServiceAccount Exists
+		managedServiceAccount := &auth.ManagedServiceAccount{}
+		if err := r.Get(ctx, types.NamespacedName{Name: managedClusterMTV, Namespace: managedCluster.Name}, managedServiceAccount); errors.IsNotFound(err) {
+			log.Info("ManagedServiceAccount not found")
+
+			managedServiceAccount.Name = managedClusterMTV
+			managedServiceAccount.Namespace = managedCluster.Name
+			managedServiceAccount.Spec.Rotation.Enabled = true
+			managedServiceAccount.Spec.Rotation.Validity = metav1.Duration{
+				Duration: time.Minute * 60}
+			controllerutil.SetControllerReference(managedCluster, managedServiceAccount, r.Scheme)
+			if err := r.Create(ctx, managedServiceAccount, &client.CreateOptions{}); err != nil {
+				log.Error(err, "Failed to create ManagedServiceAccount")
+				return ctrl.Result{}, err
+			}
+			log.Info("Created successfully", "ManagedServiceAccount", managedServiceAccount.Name)
+
+			return ctrl.Result{RequeueAfter: TokenWaitDuration}, nil
+
+		} else if err != nil {
+			log.Error(err, "Failed to retrieve ManagedServiceAccount")
+			return ctrl.Result{}, err
+		}
+
+		if err := r.reconcileResource(ctx,
+			ClusterPermissionsGVR,
+			managedCluster.Name, clusterPermissionPayload(managedCluster)); err != nil {
+			log.Error(err, "Failed to reconcile Provider")
+			return ctrl.Result{}, err
+		}
+
+		secret := &corev1.Secret{}
+		namespacedName := types.NamespacedName{
+			Name:      managedClusterMTV,
+			Namespace: managedCluster.Name,
+		}
+
+		// Do not attempt to reconcile the secret if the ManagedServiceAccount has not provisioned it yet
+		// This is the case when the ManagedServiceAccount is created for the first time
+		// and the token is not yet available
+		// The secret is created by the ManagedServiceAccount controller
+		if managedServiceAccount.Status.TokenSecretRef != nil && managedServiceAccount.Status.TokenSecretRef.Name != "" {
+			if err := r.Client.Get(ctx, namespacedName, secret); err != nil {
+				log.Error(err, "Failed to retrieve secret")
+				return ctrl.Result{}, err
+			}
+			if !bytes.Equal(secret.Data["cacert"], secret.Data["ca.crt"]) {
+				log.Info("Adding provider details to secret", "secret", secret.Name)
+
+				secret.Data["insecureSkipVerify"] = []byte("false")
+				secret.Data["url"] = []byte(managedCluster.Spec.ManagedClusterClientConfigs[0].URL)
+				secret.Data["cacert"] = secret.Data["ca.crt"]
+
+				if err := r.Client.Update(ctx, secret); err != nil {
+					log.Error(err, "Failed to update secret")
+					return ctrl.Result{}, err
+				}
+				log.Info("Updated successfully", "provider_secret", secret.Name)
+			}
+		} else {
+			log.Info("ManagedServiceAccount secret is not ready")
+			return ctrl.Result{RequeueAfter: TokenWaitDuration}, nil // Wait for the token to be created
+		}
+
+		// The plan is reconciled last to make sure it synchronizes with the Provider secret
+		if err := r.reconcileResource(
+			ctx, ProvidersGVR,
+			managedCluster.Name, providerPayload(managedCluster)); err != nil {
+			log.Error(err, "Failed to reconcile Provider")
+			return ctrl.Result{}, err
+		}
+	}
+	return ctrl.Result{}, nil
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *ManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&clusterv1.ManagedCluster{}).
+		Owns(&auth.ManagedServiceAccount{}). // Watch ManagedServiceAccounts owned by ManagedClusters
+		Complete(r)
+}
+
+func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr schema.GroupVersionResource, managedClusterName string, payload map[string]interface{}) error {
+	log := log.FromContext(ctx)
+	resourceKind := gvr.Resource
+	_, err := r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Get(
+		ctx,
+		managedClusterMTVName(managedClusterName),
+		metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		log.Info("Create " + resourceKind)
+
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			log.Error(err, "Failed to marshal "+resourceKind+" JSON")
+			return err
+		}
+
+		unstructuredPayload := &unstructured.Unstructured{}
+		err = json.Unmarshal(payloadJSON, unstructuredPayload)
+		if err != nil {
+			log.Error(err, "Failed to unmarshal "+resourceKind+" JSON to unstructured")
+			return err
+		}
+
+		_, err = r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Create(ctx, unstructuredPayload, metav1.CreateOptions{})
+		if err != nil {
+			log.Error(err, "Failed to create resource", "kind", resourceKind)
+			return err
+		}
+		log.Info("Created successfully", resourceKind, managedClusterName)
+	} else if err != nil {
+		return err
+	}
+	return nil
+}
+
+func deleteResource(ctx context.Context, dynamicClient dynamic.Interface, gvr schema.GroupVersionResource, managedClusterName string) error {
+	log := log.FromContext(ctx)
+	resourceKind := gvr.Resource
+	managedClusterMTV := managedClusterMTVName(managedClusterName)
+
+	err := dynamicClient.Resource(gvr).Namespace(managedClusterName).Delete(ctx, managedClusterMTV, metav1.DeleteOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			log.Info("Resource not found, nothing to delete", resourceKind, managedClusterMTV)
+			return nil
+		}
+		log.Error(err, "Failed to delete "+resourceKind)
+		return err
+	}
+	log.Info("Deleted successfully", resourceKind, managedClusterMTV)
+	return nil
+}
+
+func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Context, managedCluster *clusterv1.ManagedCluster) error {
+	log := log.FromContext(ctx)
+	log.Info("The ManagedCluster is no longer labeled for CNV operator installation, cleaning up resources")
+	managedClusterName := managedCluster.GetName()
+	// Delete the following resources if they exist:
+	//  * ClusterPermission
+	//  * ManagedServiceAccount
+	//  * Provider
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ClusterPermissionsGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ManagedServiceAccountsGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	if err := deleteResource(ctx,
+		r.DynamicClient,
+		ProvidersGVR,
+		managedClusterName); err != nil {
+		return err
+	}
+	original := managedCluster.DeepCopy()
+	if !controllerutil.RemoveFinalizer(managedCluster, ManagedClusterFinalizer) {
+		log.Info("Finalizer not found, nothing to remove")
+	} else {
+		patch := client.MergeFrom(original)
+		if err := r.Patch(ctx, managedCluster, patch); err != nil {
+			return err
+		}
+		log.Info("Finalizer removed")
+	}
+	return nil
+}
+
+func managedClusterMTVName(name string) string {
+	return name + "-mtv"
+}
