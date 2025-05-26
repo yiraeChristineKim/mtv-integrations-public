@@ -30,12 +30,19 @@ type ManagedClusterReconciler struct {
 	DynamicClient dynamic.Interface
 }
 
+//nolint:revive // Added by kubebuilder
 //+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters,verbs=get;list;watch
+//nolint:revive // Added by kubebuilder
 //+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/status,verbs=get
+//nolint:revive // Added by kubebuilder
 //+kubebuilder:rbac:groups=cluster.open-cluster-management.io,resources=managedclusters/finalizers,verbs=update
+//nolint:revive,lll // Added by kubebuilder
 //+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions,verbs=get;list;watch;create;update;patch;delete
+//nolint:revive // Added by kubebuilder
 //+kubebuilder:rbac:groups=rbac.open-cluster-management.io,resources=clusterpermissions/status,verbs=get;update;patch
+//nolint:revive,lll // Added by kubebuilder
 //+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts,verbs=get;list;watch;create;update;patch;delete
+//nolint:revive,lll // Added by kubebuilder
 //+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts/status,verbs=get;update;patch
 
 func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -70,15 +77,19 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 		// ManagedServiceAccount Exists
 		managedServiceAccount := &auth.ManagedServiceAccount{}
-		if err := r.Get(ctx, types.NamespacedName{Name: managedClusterMTV, Namespace: managedCluster.Name}, managedServiceAccount); errors.IsNotFound(err) {
-			log.Info("ManagedServiceAccount not found")
+		if err := r.Get(ctx, types.NamespacedName{Name: managedClusterMTV, Namespace: managedCluster.Name},
+			managedServiceAccount); errors.IsNotFound(err) {
 
+			log.Info("ManagedServiceAccount not found")
 			managedServiceAccount.Name = managedClusterMTV
 			managedServiceAccount.Namespace = managedCluster.Name
 			managedServiceAccount.Spec.Rotation.Enabled = true
 			managedServiceAccount.Spec.Rotation.Validity = metav1.Duration{
 				Duration: time.Minute * 60}
-			controllerutil.SetControllerReference(managedCluster, managedServiceAccount, r.Scheme)
+			if err := controllerutil.SetControllerReference(managedCluster, managedServiceAccount, r.Scheme); err != nil {
+				log.Error(err, "Failed to set ManagedServiceAccount owner reference to ManagedCluster")
+				return ctrl.Result{}, err
+			}
 			if err := r.Create(ctx, managedServiceAccount, &client.CreateOptions{}); err != nil {
 				log.Error(err, "Failed to create ManagedServiceAccount")
 				return ctrl.Result{}, err
@@ -151,7 +162,12 @@ func (r *ManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr schema.GroupVersionResource, managedClusterName string, payload map[string]interface{}) error {
+func (r *ManagedClusterReconciler) reconcileResource(
+	ctx context.Context,
+	gvr schema.GroupVersionResource,
+	managedClusterName string,
+	payload map[string]interface{}) error {
+
 	log := log.FromContext(ctx)
 	resourceKind := gvr.Resource
 	_, err := r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Get(
@@ -174,7 +190,8 @@ func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr sc
 			return err
 		}
 
-		_, err = r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Create(ctx, unstructuredPayload, metav1.CreateOptions{})
+		_, err = r.DynamicClient.Resource(gvr).Namespace(managedClusterName).Create(
+			ctx, unstructuredPayload, metav1.CreateOptions{})
 		if err != nil {
 			log.Error(err, "Failed to create resource", "kind", resourceKind)
 			return err
@@ -186,12 +203,18 @@ func (r *ManagedClusterReconciler) reconcileResource(ctx context.Context, gvr sc
 	return nil
 }
 
-func deleteResource(ctx context.Context, dynamicClient dynamic.Interface, gvr schema.GroupVersionResource, managedClusterName string) error {
+func deleteResource(
+	ctx context.Context,
+	dynamicClient dynamic.Interface,
+	gvr schema.GroupVersionResource,
+	managedClusterName string) error {
+
 	log := log.FromContext(ctx)
 	resourceKind := gvr.Resource
 	managedClusterMTV := managedClusterMTVName(managedClusterName)
 
-	err := dynamicClient.Resource(gvr).Namespace(managedClusterName).Delete(ctx, managedClusterMTV, metav1.DeleteOptions{})
+	err := dynamicClient.Resource(gvr).Namespace(managedClusterName).Delete(ctx,
+		managedClusterMTV, metav1.DeleteOptions{})
 	if err != nil {
 		if errors.IsNotFound(err) {
 			log.Info("Resource not found, nothing to delete", resourceKind, managedClusterMTV)
@@ -204,7 +227,9 @@ func deleteResource(ctx context.Context, dynamicClient dynamic.Interface, gvr sc
 	return nil
 }
 
-func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Context, managedCluster *clusterv1.ManagedCluster) error {
+func (r *ManagedClusterReconciler) cleanupManagedClusterResources(ctx context.Context,
+	managedCluster *clusterv1.ManagedCluster) error {
+
 	log := log.FromContext(ctx)
 	log.Info("The ManagedCluster is no longer labeled for CNV operator installation, cleaning up resources")
 	managedClusterName := managedCluster.GetName()

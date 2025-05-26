@@ -42,7 +42,8 @@ func TestReconcile_AddsFinalizer(t *testing.T) {
 		DynamicClient: dynClient,
 	}
 
-	_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	_, err := reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 
 	updated := &clusterv1.ManagedCluster{}
@@ -77,7 +78,8 @@ func TestReconcile_CreatesManagedServiceAccount(t *testing.T) {
 		DynamicClient: dynClient,
 	}
 
-	_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	_, err := reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 
 	msa := &auth.ManagedServiceAccount{}
@@ -116,7 +118,8 @@ func TestReconcile_CreatesClusterPermission(t *testing.T) {
 		DynamicClient: dynClient,
 	}
 
-	_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	_, err := reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 
 	msa := &auth.ManagedServiceAccount{}
@@ -128,11 +131,13 @@ func TestReconcile_CreatesClusterPermission(t *testing.T) {
 	assert.Equal(t, time.Minute*60, msa.Spec.Rotation.Validity.Duration)
 
 	// The next reconcile results in the create of the ClusterPermission
-	_, err = reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	_, err = reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 
 	// Check that the ClusterPermission was created in the fake dynamic client
-	u, err := dynClient.Resource(ClusterPermissionsGVR).Namespace("test-cluster").Get(context.TODO(), "test-cluster-mtv", metav1.GetOptions{})
+	u, err := dynClient.Resource(ClusterPermissionsGVR).Namespace("test-cluster").Get(context.TODO(),
+		"test-cluster-mtv", metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.NotNil(t, u)
 	assert.Equal(t, "test-cluster-mtv", u.GetName())
@@ -186,11 +191,13 @@ func TestReconcile_CreatesProvider(t *testing.T) {
 		DynamicClient: dynClient,
 	}
 
-	_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	_, err := reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 
 	msa := &auth.ManagedServiceAccount{}
-	err = k8sClient.Get(context.TODO(), types.NamespacedName{Name: "test-cluster-mtv", Namespace: "test-cluster"}, msa)
+	err = k8sClient.Get(context.TODO(),
+		types.NamespacedName{Name: "test-cluster-mtv", Namespace: "test-cluster"}, msa)
 	assert.NoError(t, err)
 	assert.Equal(t, "test-cluster-mtv", msa.Name)
 	assert.Equal(t, "test-cluster", msa.Namespace)
@@ -202,17 +209,22 @@ func TestReconcile_CreatesProvider(t *testing.T) {
 
 	// Set the correct status on the ManagedServiceAccount
 	msa = &auth.ManagedServiceAccount{}
-	err = k8sClient.Get(context.TODO(), types.NamespacedName{Name: "test-cluster-mtv", Namespace: "test-cluster"}, msa)
+	err = k8sClient.Get(context.TODO(),
+		types.NamespacedName{Name: "test-cluster-mtv", Namespace: "test-cluster"}, msa)
 	assert.NoError(t, err)
 	msa.Status.TokenSecretRef = &auth.SecretRef{Name: "test-cluster-mtv"}
-	err = k8sClient.Update(context.TODO(), msa) //use Update and not Status().Update as the fake client did not create a sub-resource
+	// use Update and not Status().Update as the fake client did not create a sub-resource
+	err = k8sClient.Update(context.TODO(), msa)
 	assert.NoError(t, err)
 
-	// This reconcile will create the Providera if the secret is present and the ManagedServiceAccount has the correct status tokenSecretRef
-	_, err = reconciler.Reconcile(context.TODO(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
+	// This reconcile will create the Providera if the secret is present and the ManagedServiceAccount
+	// has the correct status tokenSecretRef
+	_, err = reconciler.Reconcile(context.TODO(),
+		reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-cluster"}})
 	assert.NoError(t, err)
 	// Check that the Provider was created in the fake dynamic client
-	u, err := dynClient.Resource(ProvidersGVR).Namespace("test-cluster").Get(context.TODO(), "test-cluster-mtv", metav1.GetOptions{})
+	u, err := dynClient.Resource(ProvidersGVR).Namespace("test-cluster").Get(context.TODO(),
+		"test-cluster-mtv", metav1.GetOptions{})
 	assert.NoError(t, err)
 	assert.NotNil(t, u)
 	assert.Equal(t, "test-cluster-mtv", u.GetName())
