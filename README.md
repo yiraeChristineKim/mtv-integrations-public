@@ -1,57 +1,125 @@
-# mtv-integrations
+# MTV Integrations for Open Cluster Management
 
-## Summary
+## Overview
 
-The `mtv-controller-manager` automates the integration between ACM (Advanced Cluster Management) and the Migration Toolkit for Virtualization (MTV) with live migration. It monitors `ManagedCluster` resources and, when clusters are labeled as `acm/cnv-operator-install=true`, it provisions and manages the necessary Kubernetes resources to enable migration workflows between clusters.
+This repository provides comprehensive integration capabilities for the Migration Toolkit for Virtualization (MTV) within Advanced Cluster Management (ACM) environments. It includes both a controller for MTV provider management and a webhook for plan access controler. There are also addons for virtualization capabilities.
 
-## Kubernetes Resources Managed
+## Core Components
 
-- **ManagedCluster**: Representatino of the clusters that will be used as the source and target for a live migraiton
-- **ManagedServiceAccount**: Creates a service account on a managed cluster and retrieves an access token for 
-authentication.
-- **ClusterPermission**: Grants required permissions (such as `cluster-admin`) to the service account.
-- **Provider**: Defines Migration Toolkit for Virtualization provider resources (used as source and target clusters
-in live migrations)
-- **Secret**: Formats and manages secrets, created by the ManagedServiceAccount resource,  containing the cluster API 
-URL and CA certificates for use by the Migration Toolkit for Virtualization provider resources.
+### Provider Manager Controller
 
-## Build, Run, Deploy, and Undeploy
+The **Provider Manager Controller** (implemented as the `ManagedClusterReconciler`) integrates ACM managed clusters as MTV providers. Its main responsibilities include:
 
-### Build locally `./bin/manager`
+The **MTV plan webhook** is a validating admission webhook for the `Plan` resource (from the Forklift/MTV API). Its purpose is to enforce security and access control when users create or update migration plans:
 
-```sh
+## Addons
+
+This repository also contains two addons for OCM that enable container native virtualization and migration toolkit for virtualization capabilities:
+
+### MTV (Migration Toolkit for Virtualization) Addon
+
+**Quick summary:**
+- **MTV Addon:** Installs the Migration Toolkit for Virtualization operator in the `openshift-mtv` namespace on the hub, enabling VM migration features. It uses the `release-v2.8` channel and enables UI plugin, validation, and volume populator features.
+- **CNV Addon:** Installs the KubeVirt Hyperconverged operator in the `openshift-cnv` namespace, providing virtualization capabilities. It configures optimized HyperConverged settings and uses OperatorPolicy for lifecycle management.
+
+Both addons require ACM and the Policy addon. The CNV Addon targets clusters labeled with `acm/cnv-operator-install: "true"`.
+
+**See the [addons/README.md](addons/README.md) for full details and usage.**
+
+## Architecture Summary
+
+For a detailed explanation of the controller and webhook architecture, see [architecture/README.md](architecture/README.md).
+
+## Installation
+
+### Core Controller and Webhook
+
+```bash
+# Build and deploy the controller
+make build
+make deploy
+
+# Enable webhook (requires certificates)
+# Set ENABLE_WEBHOOK=true and provide certificate paths
+make deploy ENABLE_WEBHOOK=true
+```
+
+### Addons
+
+```bash
+# Deploy CNV Addon
+oc apply -f ./addons/cnv-addon
+
+# Deploy MTV Addon
+oc apply -f ./addons/mtv-addon
+```
+
+## Development
+
+### Building
+```bash
 make build
 ```
 
-### Run Locally
-
-```sh
+### Running Locally
+```bash
 make run
 ```
 
-### Deploy to Cluster
+### Testing
+```bash
+# Run unit tests
+make test
 
-```sh
-make deploy
+# Run webhook tests
+make run-webhook-test
 ```
 
-### Undeploy from Cluster
-
-```sh
-make undeploy
-```
-
-### Build container image
-
-* Set the environemnt variable `REGISTRY_BASE=quay.io/amd`, to a value that represents you destination repository.
-* Make sure you are authenticated with the repository.
-
-```sh
+### Building Container Image
+```bash
+# Set your registry
+export REGISTRY_BASE=quay.io/your-org
 make docker-build
-```
-
-### Push container image
-
-```sh
 make docker-push
 ```
+
+## Uninstallation
+
+### Important Note
+The addons do NOT automatically remove the operators when uninstalled. Manual cleanup is required.
+
+### Uninstallation Steps
+
+1. Remove the addon from the hub cluster:
+   ```bash
+   # For MTV Addon
+   oc delete clustermanagementaddon mtv-operator -n open-cluster-management
+   
+   # For CNV Addon
+   oc delete clustermanagementaddon kubevirt-hyperconverged-operator -n open-cluster-management
+   ```
+
+2. Manually remove the operators from the target clusters:
+   ```bash
+   # For MTV Operator
+   oc delete subscription mtv-operator -n openshift-mtv
+   oc delete operatorgroup openshift-mtv -n openshift-mtv
+   
+   # For CNV Operator
+   oc delete subscription kubevirt-hyperconverged -n openshift-cnv
+   oc delete operatorgroup openshift-cnv -n openshift-cnv
+   ```
+
+3. Remove the namespaces (optional, only if you want to completely clean up):
+   ```bash
+   oc delete namespace openshift-mtv
+   oc delete namespace openshift-cnv
+   ```
+
+## Contributing
+
+Please read our [Contributing Guidelines](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+
+## License
+
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
