@@ -216,7 +216,7 @@ func (r *ManagedClusterReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.å
+// SetupWithManager sets up the controller with the Manager.
 func (r *ManagedClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	log := mgr.GetLogger().WithName("controllers.ManagedClusterReconciler.SetupWithManager")
 	log.Info("Initializing ManagedCluster controller setup")
