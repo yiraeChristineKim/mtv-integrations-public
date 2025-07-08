@@ -83,6 +83,46 @@ make docker-build
 make docker-push
 ```
 
+### How to Run the Controller on OpenShift
+
+#### Deploy via CI and Quay.io
+
+1. **Open a Pull Request:**  
+   Submit a PR to this repository. You can either use an image built by Prow or build one locally on your machine.
+
+2. **Login to Your OpenShift Cluster:**  
+   Use `oc login` to authenticate to your target OpenShift cluster. This ensures your local kubeconfig points to the correct cluster.
+
+3. **Deploy the Controller:**  
+   Replace `QUAY_IMG` with your actual image name and deploy using:
+   ```bash
+   IMG=<QUAY_IMG> make deploy
+   ```
+
+#### Run Locally in VS Code (without webhook)
+
+You can run the controller locally for development (without the webhook) using VS Code's debugger.  
+Add the following configuration to your `.vscode/launch.json`:
+
+```json
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Controller (No Webhook)",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/cmd/main.go",
+            "args": [
+                "--webhook-cert-path=${workspaceFolder}",
+                "--enable-webhook=false"
+            ]
+        }
+    ]
+}
+```
+
 ## Uninstallation
 
 ### Important Note
