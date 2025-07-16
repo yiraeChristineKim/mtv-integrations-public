@@ -1,0 +1,46 @@
+# Build the manager binary
+FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_1.23 AS builder
+
+ENV GOEXPERIMENT=strictfipsruntime
+ENV BUILD_TAGS="strictfipsruntime"
+
+WORKDIR /workspace
+# Copy the Go Modules manifests
+COPY go.mod go.mod
+COPY go.sum go.sum
+
+# Cache deps
+RUN  CGO_ENABLED=1 GOFLAGS='-mod=readonly' go mod vendor
+
+# Copy the go source
+COPY cmd/main.go cmd/main.go
+COPY controllers/ controllers/
+COPY webhook/ webhook/
+
+RUN CGO_ENABLED=1 GOFLAGS='-mod=readonly' go build -tags strictfipsruntime -a -o manager cmd/main.go
+
+# Use distroless as minimal base image to package the manager binary
+# Refer to https://github.com/GoogleContainerTools/distroless for more details
+FROM registry.redhat.io/ubi9/ubi-minimal:latest
+LABEL \
+    name="mtv-integrations" \
+    com.redhat.component="mtv-integrations" \
+    description="Provides integration between Migration Toolkit for Virtualization (MTV) and \
+Advanced Cluster Management (ACM), enabling VM migration across clusters via a provider \
+controller, plan webhook, and ACM AddOns." \
+    io.k8s.description="Provides integration between Migration Toolkit for Virtualization (MTV) \
+and Advanced Cluster Management (ACM), enabling VM migration across clusters via a provider \
+controller, plan webhook, and ACM AddOns." \
+    summary="Integrates MTV with ACM to enable secure, policy-driven VM migration across clusters." \
+    io.k8s.display-name="Red Hat Advanced Cluster Management MTV Integrations" \
+    io.openshift.tags="acm mtv migration virtualization ocm"
+WORKDIR /
+COPY --from=builder /workspace/manager .
+
+# License
+RUN mkdir licenses/
+COPY LICENSE licenses/
+
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]
