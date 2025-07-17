@@ -1,8 +1,10 @@
 # Build the manager binary
 FROM registry.ci.openshift.org/stolostron/builder:go1.24-linux AS builder
 
-ENV GOEXPERIMENT=strictfipsruntime
-ENV BUILD_TAGS="strictfipsruntime"
+# Go build without FIPS capabilities or strictfipsruntime support compiled in.
+# Uncomment the following lines once a Go 1.24 base image with FIPS support is available:
+# ENV GOEXPERIMENT=strictfipsruntime
+# ENV BUILD_TAGS="strictfipsruntime"
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -17,7 +19,10 @@ COPY cmd/main.go cmd/main.go
 COPY controllers/ controllers/
 COPY webhook/ webhook/
 
-RUN CGO_ENABLED=1 GOFLAGS='-mod=readonly' go build -tags strictfipsruntime -a -o manager cmd/main.go
+# Go build without FIPS capabilities or strictfipsruntime support compiled in.
+# Uncomment the following lines once a Go 1.24 base image with FIPS support is available:
+# RUN CGO_ENABLED=1 GOFLAGS='-mod=readonly' go build -tags strictfipsruntime -a -o manager cmd/main.go
+RUN CGO_ENABLED=1 GOFLAGS='-mod=readonly' go build -a -o manager cmd/main.go
 
 # Use distroless as minimal base image to package the manager binary
 # Refer to https://github.com/GoogleContainerTools/distroless for more details
