@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM brew.registry.redhat.io/rh-osbs/openshift-golang-builder:rhel_9_1.24 AS builder
+FROM registry.ci.openshift.org/stolostron/builder:go1.24-linux AS builder
 
 ENV GOEXPERIMENT=strictfipsruntime
 ENV BUILD_TAGS="strictfipsruntime"
