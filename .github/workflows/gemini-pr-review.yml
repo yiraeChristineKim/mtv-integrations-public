@@ -161,7 +161,8 @@ jobs:
           use_gemini_code_assist: '${{ vars.GOOGLE_GENAI_USE_GCA }}'
           settings: |-
             {
-              "maxSessionTurns": 50,
+              "setMaxListeners": 50,
+              "maxSessionTurns": 30,
               "mcpServers": {
                 "github": {
                   "command": "docker",
