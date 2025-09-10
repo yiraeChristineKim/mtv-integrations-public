@@ -31,7 +31,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/tools v0.36.0 // indirect
 	kubevirt.io/api v1.6.0 // indirect
-	kubevirt.io/containerized-data-importer-api v1.60.3-0.20241105012228-50fbed985de9 // indirect
+	kubevirt.io/containerized-data-importer-api v1.63.0 // indirect
 	kubevirt.io/controller-lifecycle-operator-sdk/api v0.2.4 // indirect
 )
 
