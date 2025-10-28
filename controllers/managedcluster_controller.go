@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -51,6 +52,7 @@ const (
 //+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts,verbs=get;list;watch;create;update;patch;delete
 //nolint:revive,lll // Added by kubebuilder
 //+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=apps,resources=deployments,verbs=list
 
 // Reconcile handles the reconciliation of ManagedCluster resources for MTV integration
 // Refactored to reduce cognitive complexity from 51 to under 50 for SonarQube compliance
@@ -240,14 +242,40 @@ func (r *ManagedClusterReconciler) reconcileClusterPermissions(
 	ctx context.Context,
 	managedCluster *clusterv1.ManagedCluster,
 ) error {
+	log := log.FromContext(ctx)
+
+	msaaNamespace, err := r.findMsaaDeploymentNs(ctx)
+	if err != nil || msaaNamespace == "" {
+		log.Error(err, "Failed to find the namespace where the managed-serviceaccount-addon-agent deployment runs")
+		return err
+	}
+
 	if err := r.reconcileResource(ctx, ClusterPermissionsGVR,
 		managedCluster.Name, managedCluster.Name,
-		clusterPermissionPayload(managedCluster)); err != nil {
-		log := log.FromContext(ctx)
+		clusterPermissionPayload(managedCluster, msaaNamespace)); err != nil {
 		log.Error(err, "Failed to reconcile ClusterPermissions")
 		return err
 	}
 	return nil
+}
+
+// findMsaaDeploymentNs finds the namespace where the managed-serviceaccount-addon-agent deployment runs
+func (r *ManagedClusterReconciler) findMsaaDeploymentNs(ctx context.Context) (string, error) {
+	var depList appsv1.DeploymentList
+	if err := r.Client.List(ctx, &depList); err != nil {
+		return "", err
+	}
+
+	for _, d := range depList.Items {
+		if d.Name == "managed-serviceaccount-addon-agent" {
+			return d.Namespace, nil
+		}
+	}
+
+	return "", errors.NewNotFound(
+		schema.GroupResource{Group: "apps", Resource: "deployments"},
+		"managed-serviceaccount-addon-agent",
+	)
 }
 
 // handleProviderSecrets manages provider secret synchronization

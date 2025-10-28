@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -123,6 +124,7 @@ func TestReconcile_CreatesClusterPermission(t *testing.T) {
 	_ = clusterv1.AddToScheme(scheme)
 	_ = auth.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
 
 	managedCluster := &clusterv1.ManagedCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -137,7 +139,17 @@ func TestReconcile_CreatesClusterPermission(t *testing.T) {
 		},
 	}
 
-	k8sClient := clientfake.NewClientBuilder().WithScheme(scheme).WithObjects(providerCrd, managedCluster).Build()
+	defaultNamespace := "open-cluster-management-agent-addon"
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "managed-serviceaccount-addon-agent",
+			Namespace: defaultNamespace,
+		},
+	}
+
+	k8sClient := clientfake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(providerCrd, managedCluster, deployment).Build()
 	dynClient := fake.NewSimpleDynamicClient(scheme)
 
 	reconciler := &ManagedClusterReconciler{
@@ -172,11 +184,17 @@ func TestReconcile_CreatesClusterPermission(t *testing.T) {
 	assert.Equal(t, "test-cluster", u.GetNamespace())
 
 	// Compare the spec of the ClusterPermission with the expected payload from payloads.go
-	expectedSpec := clusterPermissionPayload(managedCluster) // assuming this function exists in payloads.go
+	expectedSpec := clusterPermissionPayload(managedCluster,
+		defaultNamespace) // assuming this function exists in payloads.go
 	actualSpec, found, err := unstructured.NestedMap(u.Object, "spec")
 	assert.NoError(t, err)
 	assert.True(t, found, "spec field not found in ClusterPermission")
 	assert.Equal(t, expectedSpec["spec"], actualSpec)
+	// break down nested maps to avoid long lines
+	expectedSpecMap := expectedSpec["spec"].(map[string]interface{})
+	expectedCRB := expectedSpecMap["clusterRoleBinding"].(map[string]interface{})
+	expectedSubject := expectedCRB["subject"].(map[string]interface{})
+	assert.Equal(t, expectedSubject["namespace"], defaultNamespace)
 }
 
 func TestReconcile_CreatesProvider(t *testing.T) {
@@ -185,6 +203,7 @@ func TestReconcile_CreatesProvider(t *testing.T) {
 	_ = auth.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)
 	_ = apiextensionsv1.AddToScheme(scheme)
+	_ = appsv1.AddToScheme(scheme)
 
 	managedCluster := &clusterv1.ManagedCluster{
 		ObjectMeta: metav1.ObjectMeta{
@@ -210,8 +229,16 @@ func TestReconcile_CreatesProvider(t *testing.T) {
 			"url":                []byte("https://api.example.com:6443"),
 		},
 	}
+	defaultNamespace := "open-cluster-management-agent-addon"
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "managed-serviceaccount-addon-agent",
+			Namespace: defaultNamespace,
+		},
+	}
 
-	k8sClient := clientfake.NewClientBuilder().WithScheme(scheme).WithObjects(providerCrd, managedCluster, secret).Build()
+	k8sClient := clientfake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(providerCrd, managedCluster, secret, deployment).Build()
 	dynClient := fake.NewSimpleDynamicClient(scheme)
 
 	reconciler := &ManagedClusterReconciler{
