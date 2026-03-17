@@ -15,9 +15,19 @@ rules:
 - apiGroups: ["rbac.open-cluster-management.io"]
   resources: ["clusterpermissions"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Secrets: MSA token secret + provider credentials.
+# Namespaces: create the mtv-integrations namespace per managed cluster.
 - apiGroups: [""]
   resources: ["secrets", "namespaces"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+# Services: read cluster-proxy-addon-user to discover the cluster-proxy host.
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+# ConfigMaps: read openshift-service-ca.crt to verify cluster-proxy TLS.
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch"]
 - apiGroups: ["forklift.konveyor.io"]
   resources: ["providers"]
   verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
@@ -32,7 +42,12 @@ rules:
   verbs: ["impersonate"]
 - apiGroups: ["apiextensions.k8s.io"]
   resources: ["customresourcedefinitions", "customresourcedefinitions/status"]
-  verbs: ["get","list","watch"]
+  verbs: ["get", "list", "watch"]
+# Deployments: list all to locate the managed-serviceaccount-addon-agent namespace.
 - apiGroups: ["apps"]
   resources: ["deployments"]
   verbs: ["get", "list", "watch"]
+# Routes: read cluster-proxy Route spec.host when DEV_MODE=true.
+- apiGroups: ["route.openshift.io"]
+  resources: ["routes"]
+  verbs: ["get"]

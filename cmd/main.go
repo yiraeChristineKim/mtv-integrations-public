@@ -17,8 +17,10 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"net/http"
 	"os"
 	"path/filepath"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/stolostron/mtv-integrations/controllers"
 	miwebhook "github.com/stolostron/mtv-integrations/webhook"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
+	viewv1beta1 "open-cluster-management.io/multicloud-operators-subscription/pkg/apis/view/v1beta1"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -60,6 +63,7 @@ func init() {
 	utilruntime.Must(forkliftv1beta1.SchemeBuilder.AddToScheme(scheme))
 	utilruntime.Must(authorizationv1.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
+	utilruntime.Must(viewv1beta1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -72,12 +76,14 @@ func main() {
 	// For local testing
 	var enableWebhook bool
 	var probeAddr string
+	var apiAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
+	flag.StringVar(&apiAddr, "api-bind-address", ":8082", "The address the cluster recommendation API server binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
@@ -239,6 +245,28 @@ func main() {
 
 		webhookServer.Register("/validate-plan", miwebhook.ValidateWebhook(mgr.GetClient(), *mgr.GetConfig()))
 	}
+
+	clusterRecHandler := controllers.NewClusterRecommendationHandler(mgr.GetClient(), mgr.GetScheme(), mgr.GetConfig(), dynamicClient)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/cluster-recommendation", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			clusterRecHandler.HandleClusterRecommendation(w, r)
+		case http.MethodPost:
+			clusterRecHandler.HandleClusterRecommendationPost(w, r)
+		default:
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+	apiServer := &http.Server{
+		Addr:    apiAddr,
+		Handler: apiMux,
+	}
+	if err := mgr.Add(newAPIServerRunnable(apiServer)); err != nil {
+		setupLog.Error(err, "unable to add cluster recommendation API server to manager")
+		os.Exit(1)
+	}
+	setupLog.Info("Cluster recommendation API server registered", "address", apiAddr)
 	// +kubebuilder:scaffold:builder
 
 	if metricsCertWatcher != nil {
@@ -270,5 +298,29 @@ func main() {
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
+	}
+}
+
+// apiServerRunnable wraps an http.Server so it satisfies manager.Runnable.
+type apiServerRunnable struct {
+	server *http.Server
+}
+
+func newAPIServerRunnable(s *http.Server) *apiServerRunnable {
+	return &apiServerRunnable{server: s}
+}
+
+func (a *apiServerRunnable) Start(ctx context.Context) error {
+	errCh := make(chan error, 1)
+	go func() {
+		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+	}()
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return a.server.Shutdown(context.Background())
 	}
 }

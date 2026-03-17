@@ -1,10 +1,12 @@
 package e2e
 
 import (
+	"context"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/clientcmd"
@@ -36,3 +38,15 @@ var _ = BeforeSuite(func() {
 	dynamicClientHub, err = dynamic.NewForConfig(config)
 	Expect(err).NotTo(HaveOccurred())
 })
+
+// clusterProxyAvailable returns true when the cluster-proxy-addon-user Service
+// exists in the multicluster-engine namespace.  This is satisfied by a full MCE
+// installation or by running "make prepare-e2e-ocm" which installs OCM via
+// clusteradm and creates the multicluster-engine namespace alias.
+// Tests that require actual cluster scoring use this to skip gracefully on
+// plain kind clusters that have only CRDs installed.
+func clusterProxyAvailable() bool {
+	_, err := clientHub.CoreV1().Services("multicluster-engine").Get(
+		context.TODO(), "cluster-proxy-addon-user", metav1.GetOptions{})
+	return err == nil
+}

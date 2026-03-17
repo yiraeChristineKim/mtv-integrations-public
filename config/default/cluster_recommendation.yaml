@@ -1,0 +1,54 @@
+# Service and Route for the cluster recommendation HTTP API.
+#
+# The API server is started by cmd/main.go and binds to --api-bind-address
+# (default :8082).  Apply this file directly for testing:
+#
+#   kubectl apply -f config/default/cluster_recommendation.yaml
+#
+# After the Route is admitted, access the API from outside the cluster:
+#   HOST=$(kubectl get route cluster-recommendation-api \
+#             -n open-cluster-management -o jsonpath='{.spec.host}')
+#   curl "https://$HOST/api/cluster-recommendation?cpuCores=2&memoryGiB=4&storageGB=50&targetStorageClass=<name>"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    control-plane: mtv-controller
+    app.kubernetes.io/name: mtv-integrations
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster-recommendation-api
+  namespace: open-cluster-management
+spec:
+  ports:
+  - name: http
+    port: 8082
+    protocol: TCP
+    targetPort: 8082
+  selector:
+    control-plane: mtv-controller
+    app.kubernetes.io/name: mtv-integrations
+---
+# Route exposes the Service through the OpenShift ingress router with TLS
+# edge termination (the router terminates HTTPS; the pod receives plain HTTP).
+# Used in DEV_MODE and for smoke-test access from outside the cluster.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  labels:
+    control-plane: mtv-controller
+    app.kubernetes.io/name: mtv-integrations
+    app.kubernetes.io/managed-by: kustomize
+  name: cluster-recommendation-api
+  namespace: open-cluster-management
+spec:
+  to:
+    kind: Service
+    name: cluster-recommendation-api
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None

@@ -264,6 +264,48 @@ prepare-webhook-test: kind-create-cluster create-user add-user cert-manager kind
 
 prepare-e2e-test: kind-create-cluster cert-manager install-resources deploy
 
+# install-ocm sets up a full OCM hub on the current kind cluster using clusteradm.
+# It installs the cluster-proxy and managed-serviceaccount hub addons, and creates
+# the multicluster-engine namespace alias that mtv-integrations expects for the
+# cluster-proxy-addon-user Service.
+#
+# After running this target:
+#   1. Join a second kind cluster:
+#        kind create cluster --name managed1
+#        clusteradm get token | grep "clusteradm join"  # run on managed1
+#        clusteradm accept --clusters managed1           # run on hub
+#   2. Label a node on managed1 for KubeVirt scheduling:
+#        kubectl --context kind-managed1 label node managed1-control-plane kubevirt.io/schedulable=true
+#   3. Install metrics-server on managed1:
+#        kubectl --context kind-managed1 apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#        kubectl --context kind-managed1 patch deployment metrics-server -n kube-system \
+#          --type=json -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+#   4. Run the smoke tests:
+#        make run-e2e-test TEST_TARGET_STORAGE_CLASS=standard
+.PHONY: install-ocm
+install-ocm:
+	@echo "==> Checking for clusteradm..."
+	@which clusteradm 2>/dev/null || (echo "Installing clusteradm..." && \
+	  curl -L https://raw.githubusercontent.com/open-cluster-management-io/clusteradm/main/install.sh | bash)
+	@echo "==> Initializing OCM hub..."
+	clusteradm init --wait
+	@echo "==> Installing cluster-proxy hub addon..."
+	clusteradm install hub-addon --names cluster-proxy
+	@echo "==> Installing managed-serviceaccount hub addon..."
+	clusteradm install hub-addon --names managed-serviceaccount
+	@echo "==> Creating multicluster-engine namespace (expected by mtv-integrations)..."
+	-kubectl create ns multicluster-engine
+	@echo "==> Linking cluster-proxy-addon-user Service into multicluster-engine..."
+	@echo "    NOTE: run the following once the cluster-proxy addon is Ready:"
+	@echo "    kubectl get svc -A | grep cluster-proxy-addon-user"
+	@echo "    Then create an ExternalName Service in multicluster-engine pointing to it."
+	@echo "==> OCM hub ready. See 'make install-ocm' comments for next steps."
+
+# prepare-e2e-ocm is the full end-to-end setup for Option 2 (OCM via clusteradm).
+# Use this instead of prepare-e2e-test when you want real cluster scoring.
+.PHONY: prepare-e2e-ocm
+prepare-e2e-ocm: kind-create-cluster cert-manager install-ocm install-resources deploy
+
 e2e-dependencies:
 	GOBIN=$(LOCALBIN) go install github.com/onsi/ginkgo/v2/ginkgo@$(shell awk '/github.com\/onsi\/ginkgo\/v2/ {print $$2}' go.mod)
 

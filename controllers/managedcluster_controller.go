@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -269,23 +268,9 @@ func (r *ManagedClusterReconciler) reconcileClusterPermissions(
 	return nil
 }
 
-// findMsaaDeploymentNs finds the namespace where the managed-serviceaccount-addon-agent deployment runs
+// findMsaaDeploymentNs delegates to the shared package-level helper in payloads.go.
 func (r *ManagedClusterReconciler) findMsaaDeploymentNs(ctx context.Context) (string, error) {
-	var depList appsv1.DeploymentList
-	if err := r.Client.List(ctx, &depList); err != nil {
-		return "", err
-	}
-
-	for _, d := range depList.Items {
-		if d.Name == "managed-serviceaccount-addon-agent" {
-			return d.Namespace, nil
-		}
-	}
-
-	return "", errors.NewNotFound(
-		schema.GroupResource{Group: "apps", Resource: "deployments"},
-		"managed-serviceaccount-addon-agent",
-	)
+	return findMsaaDeploymentNs(ctx, r.Client)
 }
 
 // handleProviderSecrets manages provider secret synchronization

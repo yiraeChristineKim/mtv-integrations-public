@@ -1,10 +1,14 @@
 package controllers
 
 import (
+	"context"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -78,6 +82,24 @@ func clusterPermissionPayload(managedCluster *clusterv1.ManagedCluster, msaaName
 			},
 		},
 	}
+}
+
+// findMsaaDeploymentNs returns the namespace where the managed-serviceaccount-addon-agent
+// deployment runs. Shared by ManagedClusterReconciler and ClusterRecommendationService.
+func findMsaaDeploymentNs(ctx context.Context, c client.Client) (string, error) {
+	var depList appsv1.DeploymentList
+	if err := c.List(ctx, &depList); err != nil {
+		return "", err
+	}
+	for _, d := range depList.Items {
+		if d.Name == "managed-serviceaccount-addon-agent" {
+			return d.Namespace, nil
+		}
+	}
+	return "", errors.NewNotFound(
+		schema.GroupResource{Group: "apps", Resource: "deployments"},
+		"managed-serviceaccount-addon-agent",
+	)
 }
 
 func generateGVR(group string, version string, resource string) schema.GroupVersionResource {
