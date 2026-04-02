@@ -72,14 +72,16 @@ jobs:
         run: |
           make prepare-e2e-test
           make run-provider-crd-test
+          [ -f coverage_e2e.out ] && mv coverage_e2e.out coverage_provider_crd.out || true
+          [ -f report_e2e.json ] && mv report_e2e.json report_provider_crd.json || true
       - name: Upload provider CRD artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-provider-crd
           path: |
-            coverage_e2e.out
-            report_e2e.json
+            coverage_provider_crd.out
+            report_provider_crd.json
           if-no-files-found: ignore
 
   e2e-test:
@@ -98,35 +100,74 @@ jobs:
         run: |
           make prepare-e2e-test
           make run-e2e-test
+          [ -f coverage_e2e.out ] && mv coverage_e2e.out coverage_e2e_main.out || true
+          [ -f report_e2e.json ] && mv report_e2e.json report_e2e_main.json || true
       - name: Upload e2e test artifacts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-e2e
           path: |
-            coverage_e2e.out
-            report_e2e.json
+            coverage_e2e_main.out
+            report_e2e_main.json
           if-no-files-found: ignore
+
+  advisor-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    env:
+      KIND_NAME: kind-cluster
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@v6
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Running Tests
+        run: |
+          make prepare-e2e-test
+          make run-advisor-test
+          [ -f coverage_e2e.out ] && mv coverage_e2e.out coverage_advisor.out || true
+          [ -f report_e2e.json ] && mv report_e2e.json report_advisor.json || true
+
+      - name: Upload e2e test artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-advisor
+          path: |
+            coverage_advisor.out
+            report_advisor.json
+          if-no-files-found: ignore
+
   sonarcloud:
     runs-on: ubuntu-latest
+    if: always()
     needs:
       - e2e-test
+      - advisor-test
       - webhook-test
       - test
       - provider-crd-test
     steps:
-      - run: echo "Running SonarCloud analysis..."
+      - name: Clone the code
+        uses: actions/checkout@v6
       - name: Download test artifacts
         uses: actions/download-artifact@v8
         with:
           pattern: artifacts-*
           merge-multiple: true
-          path: artifacts
+          path: .
+      - name: Verify downloaded artifacts
+        run: ls -la coverage*.out report*.json 2>/dev/null || echo "No coverage/report files found"
       - name: Upload artifacts for the sonarcloud workflow
         uses: actions/upload-artifact@v7
         with:
           name: artifacts
           path: |
-            artifacts/coverage*.out
-            artifacts/report*.json
-          if-no-files-found: error
+            coverage*.out
+            report*.json
+          if-no-files-found: warn

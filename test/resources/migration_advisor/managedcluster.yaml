@@ -1,0 +1,10 @@
+apiVersion: cluster.open-cluster-management.io/v1
+kind: ManagedCluster
+metadata:
+  name: advisor-cluster
+  labels:
+    acm/cnv-operator-install: "true"
+spec:
+  hubAcceptsClient: true
+  managedClusterClientConfigs:
+    - url: https://api.cleanup-cluster.example:6443

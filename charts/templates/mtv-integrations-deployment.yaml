@@ -85,6 +85,9 @@ spec:
             - containerPort: 9443
               protocol: TCP
               name: webhook-http
+            - containerPort: 8082
+              protocol: TCP
+              name: advisor-http
           securityContext:
             privileged: false
             readOnlyRootFilesystem: true

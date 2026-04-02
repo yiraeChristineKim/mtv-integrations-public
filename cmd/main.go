@@ -17,18 +17,27 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	"github.com/stolostron/mtv-integrations/controllers"
+	"github.com/stolostron/mtv-integrations/controllers/migrationadvisor"
 	miwebhook "github.com/stolostron/mtv-integrations/webhook"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/dynamic"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -63,7 +72,76 @@ func init() {
 	// +kubebuilder:scaffold:scheme
 }
 
+var routeGVR = schema.GroupVersionResource{
+	Group:    "route.openshift.io",
+	Version:  "v1",
+	Resource: "routes",
+}
+
+// discoverAdvisorEndpoints auto-discovers the OpenShift Route URLs for the ACM
+// Search API and Thanos Query Frontend. It is called at startup when the
+// corresponding flags are not set, so there is no need to look up Route URLs
+// manually when running the controller outside the cluster.
+//
+// Route names are stable across ACM/MCO installations:
+//   - search-api       in open-cluster-management
+//   - rbac-query-proxy in open-cluster-management-observability
+//
+// Returns empty strings for any endpoint that could not be discovered; the
+// clients will then fall back to their in-cluster service defaults.
+func discoverAdvisorEndpoints(
+	ctx context.Context,
+	dynClient dynamic.Interface,
+	searchEndpoint, thanosEndpoint string,
+) (string, string, error) {
+	routeHost := func(namespace, routeName string) (string, error) {
+		obj, err := dynClient.Resource(routeGVR).Namespace(namespace).Get(ctx, routeName, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				setupLog.Info("Route not found, will use in-cluster default",
+					"namespace", namespace, "route", routeName)
+				return "", nil
+			}
+			setupLog.Error(err, "Failed to lookup Route",
+				"namespace", namespace, "route", routeName)
+			return "", err
+		}
+		host, _, _ := unstructured.NestedString(obj.Object, "spec", "host")
+		return host, nil
+	}
+
+	if searchEndpoint == "" {
+		host, err := routeHost("open-cluster-management", "search-api")
+		if err != nil {
+			return "", "", err
+		}
+		if host != "" {
+			searchEndpoint = fmt.Sprintf("https://%s/searchapi/graphql", host)
+			setupLog.Info("Discovered Search API Route", "endpoint", searchEndpoint)
+		}
+	}
+
+	if thanosEndpoint == "" {
+		host, err := routeHost("open-cluster-management-observability", "rbac-query-proxy")
+		if err != nil {
+			return "", "", err
+		}
+		if host != "" {
+			thanosEndpoint = fmt.Sprintf("https://%s", host)
+			setupLog.Info("Discovered Thanos Route", "endpoint", thanosEndpoint)
+		}
+	}
+
+	return searchEndpoint, thanosEndpoint, nil
+}
+
 // nolint:gocyclo
+// runnableFunc adapts a plain function to the ctrl.Runnable interface so it
+// can be added to the controller-runtime manager's lifecycle.
+type runnableFunc func(ctx context.Context) error
+
+func (f runnableFunc) Start(ctx context.Context) error { return f(ctx) }
+
 func main() {
 	var metricsAddr string
 	var metricsCertPath, metricsCertName, metricsCertKey string
@@ -75,6 +153,10 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var searchAPIEndpoint string
+	var thanosHost string
+	var advisorAddr string
+	var advisorCacheTTL time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -96,6 +178,23 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.StringVar(&searchAPIEndpoint, "search-api-endpoint", "",
+		"Full URL of the ACM Search API GraphQL endpoint. "+
+			"Defaults to the in-cluster service (search-search-api.open-cluster-management.svc:4010). "+
+			"For local testing pass the OpenShift Route URL, e.g. "+
+			"https://search-api-open-cluster-management.apps.<hub-domain>/searchapi/graphql")
+	flag.StringVar(&thanosHost, "thanos-host", "",
+		"Base URL of the Thanos Query Frontend. "+
+			"Defaults to the in-cluster MCO service ("+
+			"observability-thanos-query-frontend.open-cluster-management-observability.svc:9090). "+
+			"For local testing pass the Route URL, e.g. "+
+			"https://rbac-query-proxy-open-cluster-management-observability.apps.<hub-domain>")
+	flag.StringVar(&advisorAddr, "advisor-addr", ":8082",
+		"TCP address the migration advisor API listens on (plain HTTP, no TLS required). "+
+			"Example: :8082 or 127.0.0.1:8082")
+	flag.DurationVar(&advisorCacheTTL, "advisor-cache-ttl", 0,
+		"How long cluster-wide data (node metrics, StorageClasses) is cached by the "+
+			"migration advisor. Defaults to 30s when not set.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -223,6 +322,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Auto-discover Route URLs when flags were not set explicitly.
+	// When running in-cluster the Routes are reachable but unnecessary (the
+	// in-cluster service URLs are faster); when running locally the Routes are
+	// the only way to reach the services.
+	if searchAPIEndpoint == "" || thanosHost == "" {
+		discoverCtx, discoverCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer discoverCancel()
+		discoveredSearch, discoveredThanos, err := discoverAdvisorEndpoints(
+			discoverCtx, dynamicClient, searchAPIEndpoint, thanosHost)
+		if err != nil {
+			setupLog.Error(err, "failed to discover advisor endpoints")
+			os.Exit(1)
+		}
+		if searchAPIEndpoint == "" {
+			searchAPIEndpoint = discoveredSearch
+		}
+		if thanosHost == "" {
+			thanosHost = discoveredThanos
+		}
+	}
+
 	if err = (&controllers.ManagedClusterReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
@@ -238,6 +358,62 @@ func main() {
 		}
 
 		webhookServer.Register("/validate-plan", miwebhook.ValidateWebhook(mgr.GetClient(), *mgr.GetConfig()))
+	}
+
+	// Start a dedicated plain-HTTP server for the migration advisor API.
+	// This is completely separate from the webhook server so no TLS certificate
+	// is required, and the advisor works regardless of whether --enable-webhook
+	// is set.
+	advisorHandler := &migrationadvisor.Handler{
+		DynamicClient:     dynamicClient,
+		RestConfig:        mgr.GetConfig(),
+		SearchAPIEndpoint: searchAPIEndpoint,
+		ThanosHost:        thanosHost,
+		CacheTTL:          advisorCacheTTL,
+	}
+	advisorMux := http.NewServeMux()
+	advisorMux.Handle("/api/v1/migration-targets", advisorHandler)
+	advisorMux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		obsClient := &migrationadvisor.ObservabilityClient{
+			RestConfig: mgr.GetConfig(),
+			ThanosHost: thanosHost,
+		}
+		if err := obsClient.CheckHealth(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	advisorServer := &http.Server{
+		Addr:              advisorAddr,
+		Handler:           advisorMux,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := mgr.Add(runnableFunc(func(ctx context.Context) error {
+		setupLog.Info("Starting migration advisor API server", "addr", advisorAddr)
+		errCh := make(chan error, 1)
+		go func() { errCh <- advisorServer.ListenAndServe() }()
+		select {
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			return advisorServer.Shutdown(shutdownCtx)
+		case err := <-errCh:
+			return err
+		}
+	})); err != nil {
+		setupLog.Error(err, "unable to add advisor server to manager")
+		os.Exit(1)
 	}
 	// +kubebuilder:scaffold:builder
 

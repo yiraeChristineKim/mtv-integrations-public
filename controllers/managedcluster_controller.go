@@ -56,6 +56,8 @@ const (
 //nolint:revive,lll // Added by kubebuilder
 //+kubebuilder:rbac:groups=authentication.open-cluster-management.io,resources=managedserviceaccounts/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch
+//nolint:revive,lll // Added by kubebuilder
+//+kubebuilder:rbac:groups=view.open-cluster-management.io,resources=managedclusterviews,verbs=create;get;delete
 
 // Reconcile handles the reconciliation of ManagedCluster resources for MTV integration
 // Refactored to reduce cognitive complexity from 51 to under 50 for SonarQube compliance
