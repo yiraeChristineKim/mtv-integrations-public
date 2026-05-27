@@ -39,7 +39,7 @@ var userPermissionGVR = schema.GroupVersionResource{
 	Resource: "userpermissions",
 }
 
-func ValidateWebhook(c client.Client, config rest.Config) *webhook.Admission {
+func ValidateWebhook(_ client.Client, config rest.Config) *webhook.Admission {
 	return &webhook.Admission{
 		Handler: admission.HandlerFunc(func(ctx context.Context, req webhook.AdmissionRequest) webhook.AdmissionResponse {
 			log := ctrl.LoggerFrom(ctx).WithValues("operation", req.Operation, "user", req.UserInfo.Username)

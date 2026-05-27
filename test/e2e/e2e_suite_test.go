@@ -3,16 +3,18 @@ package e2e
 import (
 	"testing"
 
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
+	. "github.com/onsi/ginkgo/v2" //nolint:revive // Ginkgo tests conventionally use dot imports.
+	. "github.com/onsi/gomega"    //nolint:revive // Gomega assertions are used pervasively in this file.
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var clientHub kubernetes.Interface
 var dynamicClientHub dynamic.Interface
+var restConfig *rest.Config
 
 const kubeconfigHub = "../../kubeconfig_e2e"
 
@@ -25,14 +27,13 @@ var _ = BeforeSuite(func() {
 	By("Setup the controller-runtime logger")
 	ctrllog.SetLogger(GinkgoLogr)
 
-	config, err := clientcmd.BuildConfigFromFlags("", kubeconfigHub)
-	if err != nil {
-		Expect(err).NotTo(HaveOccurred())
-	}
-
-	clientHub, err = kubernetes.NewForConfig(config)
+	var err error
+	restConfig, err = clientcmd.BuildConfigFromFlags("", kubeconfigHub)
 	Expect(err).NotTo(HaveOccurred())
 
-	dynamicClientHub, err = dynamic.NewForConfig(config)
+	clientHub, err = kubernetes.NewForConfig(restConfig)
+	Expect(err).NotTo(HaveOccurred())
+
+	dynamicClientHub, err = dynamic.NewForConfig(restConfig)
 	Expect(err).NotTo(HaveOccurred())
 })

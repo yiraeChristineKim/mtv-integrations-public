@@ -256,6 +256,7 @@ install-resources:
 	kubectl apply -f https://raw.githubusercontent.com/kubev2v/forklift/refs/heads/main/operator/config/crd/bases/forklift.konveyor.io_plans.yaml
 	kubectl apply -f https://raw.githubusercontent.com/open-cluster-management-io/api/main/cluster/v1/0000_00_clusters.open-cluster-management.io_managedclusters.crd.yaml
 	kubectl apply -f https://raw.githubusercontent.com/open-cluster-management-io/multicloud-integrations/refs/heads/main/deploy/crds/clusters.open-cluster-management.io_managedserviceaccounts.crd.yaml
+	kubectl apply -f https://raw.githubusercontent.com/stolostron/cluster-lifecycle-api/main/view/v1beta1/view.open-cluster-management.io_managedclusterviews.crd.yaml
 
 kind-load-image: docker-build
 	kind load image-archive <($(CONTAINER_TOOL) save $(IMG)) --name $(KIND_NAME)
@@ -275,13 +276,55 @@ e2e-dependencies:
 
 SECRET_NAME="mtv-plan-webhook-server-cert"
 NAMESPACE="open-cluster-management"
+FAKE_THANOS_PORT ?= 19090
+FAKE_THANOS_HOST ?= http://127.0.0.1:$(FAKE_THANOS_PORT)
+FAKE_THANOS_PID_FILE ?= .fake_thanos.pid
+FAKE_SEARCH_PORT ?= 19091
+FAKE_SEARCH_HOST ?= http://127.0.0.1:$(FAKE_SEARCH_PORT)
+FAKE_SEARCH_PID_FILE ?= .fake_search.pid
 run-instrument:
 	kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.ca\.crt}' | base64 -d > ca.crt
 	kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.tls\.crt}' | base64 -d > tls.crt
 	kubectl get secret ${SECRET_NAME} -n ${NAMESPACE} -o jsonpath='{.data.tls\.key}' | base64 -d > tls.key
 	go build -cover -o mtv_integrations_instrumented cmd/main.go
 	mkdir -p coverage_profiles
-	GOCOVERDIR=coverage_profiles nohup ./mtv_integrations_instrumented --webhook-cert-path=. >> test/e2e/e2e.log  2>&1 &
+	GOCOVERDIR=coverage_profiles nohup ./mtv_integrations_instrumented --webhook-cert-path=. $${THANOS_HOST:+--thanos-host=$${THANOS_HOST}} $${SEARCH_API_ENDPOINT:+--search-api-endpoint=$${SEARCH_API_ENDPOINT}} >> test/e2e/e2e.log  2>&1 &
+
+start-fake-thanos:
+	nohup go run ./test/utils/fake-thanos-server --port $(FAKE_THANOS_PORT) >> test/e2e/e2e.log 2>&1 & echo $$! > $(FAKE_THANOS_PID_FILE)
+	@for i in {1..30}; do \
+		if curl -fsS "$(FAKE_THANOS_HOST)/api/v1/query?query=up" >/dev/null; then \
+			echo "Fake Thanos is ready on $(FAKE_THANOS_HOST)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "Fake Thanos failed to start"; \
+	exit 1
+
+stop-fake-thanos:
+	@if [ -f "$(FAKE_THANOS_PID_FILE)" ]; then \
+		kill "$$(cat $(FAKE_THANOS_PID_FILE))" >/dev/null 2>&1 || true; \
+		rm -f "$(FAKE_THANOS_PID_FILE)"; \
+	fi
+
+start-fake-search:
+	nohup go run ./test/utils/fake-search-server --port $(FAKE_SEARCH_PORT) >> test/e2e/e2e.log 2>&1 & echo $$! > $(FAKE_SEARCH_PID_FILE)
+	@for i in {1..30}; do \
+		if curl -fsS "$(FAKE_SEARCH_HOST)/healthz" >/dev/null; then \
+			echo "Fake Search is ready on $(FAKE_SEARCH_HOST)"; \
+			exit 0; \
+		fi; \
+		sleep 1; \
+	done; \
+	echo "Fake Search failed to start"; \
+	exit 1
+
+stop-fake-search:
+	@if [ -f "$(FAKE_SEARCH_PID_FILE)" ]; then \
+		kill "$$(cat $(FAKE_SEARCH_PID_FILE))" >/dev/null 2>&1 || true; \
+		rm -f "$(FAKE_SEARCH_PID_FILE)"; \
+	fi
 
 exit-instrument:
 	# Exit the instrumented process
@@ -299,9 +342,19 @@ run-provider-crd-test: e2e-dependencies run-instrument
 	$(MAKE) exit-instrument
 
 run-e2e-test: e2e-dependencies run-instrument
-	$(GINKGO) -v --fail-fast --label-filter="!managedcluster_provider_crd && !webhook" --json-report=report_e2e.json test/e2e
+	$(GINKGO) -v --fail-fast --label-filter="!managedcluster_provider_crd && !webhook && !migration_advisor" --json-report=report_e2e.json test/e2e
 	-go tool covdata textfmt -i=coverage_profiles -o=coverage_e2e.out
 	$(MAKE) exit-instrument
+
+.PHONY: run-advisor-test
+run-advisor-test: e2e-dependencies ## Run migration advisor API e2e tests (requires prepare-e2e-test).
+	@set -e; \
+	trap '$(MAKE) stop-fake-search; $(MAKE) stop-fake-thanos; $(MAKE) exit-instrument' EXIT; \
+	$(MAKE) start-fake-search; \
+	$(MAKE) start-fake-thanos; \
+	$(MAKE) run-instrument THANOS_HOST=$(FAKE_THANOS_HOST) SEARCH_API_ENDPOINT=$(FAKE_SEARCH_HOST)/searchapi/graphql; \
+	$(GINKGO) -v --fail-fast --label-filter="migration_advisor" --json-report=report_advisor.json -timeout 120s test/e2e; \
+	go tool covdata textfmt -i=coverage_profiles -o=coverage_e2e.out || true
 
 delete-cluster:
 	# Delete the kind cluster

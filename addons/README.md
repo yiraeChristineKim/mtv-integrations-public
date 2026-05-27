@@ -113,3 +113,17 @@ This file contains ClusterPermission resources that grant KubeVirt admin access 
    ```bash
    oc get clusterpermissions -A
    ```
+
+## Migration Advisor External Access
+
+Migration Advisor runs in the hub-side `mtv-integrations` controller, not in the spoke addon manifests in this folder.
+
+When deploying the hub controller via Helm chart templates, external access is exposed through:
+
+- Service: `mtv-advisor-service` (port `8082`)
+- Route: `mtv-advisor-route`
+
+Endpoints:
+
+- `/api/v1/migration-targets`
+- `/health`
