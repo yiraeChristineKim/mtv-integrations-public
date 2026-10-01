@@ -21,7 +21,7 @@ The migration advisor uses HTTPS clients built in `controllers/migrationadvisor/
 
 | Component | Notes |
 |-----------|--------|
-| Migration Advisor API | Plain HTTP on `--advisor-bind-address` (default `:8082`); no TLS server in-process |
+| Migration Advisor API | Plain HTTP on `--advisor-addr` (default `:8082`); no TLS server in-process |
 | Health probes | HTTP on `:8081` |
 | OpenShift Route to advisor | TLS terminates at the cluster ingress/router, not in mtv-integrations |
 
