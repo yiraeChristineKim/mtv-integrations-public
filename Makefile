@@ -113,7 +113,7 @@ build:  fmt vet ## Build manager binary.
 
 .PHONY: run
 run: fmt vet ## Run a controller from your host.
-	$(GO_ENV_PREFIX) go run ./cmd/main.go
+	$(GO_ENV_PREFIX) go run ./cmd
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

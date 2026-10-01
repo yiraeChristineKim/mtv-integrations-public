@@ -1,5 +1,5 @@
 /*
-Copyright 2025.
+Copyright 2025 Red Hat, Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -40,7 +40,11 @@ func TestTLSConfigFromProfileSpec_groupsUnset(t *testing.T) {
 	cfg := &tls.Config{}
 	apply(cfg)
 	assert.Equal(t, uint16(tls.VersionTLS12), cfg.MinVersion, "profile min TLS version must be applied to tls.Config")
-	assert.Nil(t, cfg.CurvePreferences, "omitted groups must leave CurvePreferences unset so Go keeps default group selection")
+	assert.Nil(
+		t,
+		cfg.CurvePreferences,
+		"omitted groups must leave CurvePreferences unset so Go keeps default group selection",
+	)
 }
 
 func TestTLSConfigFromProfileSpec_groupsFilter(t *testing.T) {
@@ -74,5 +78,9 @@ func TestTLSConfigFromProfileSpec_intermediateProfileIncludesGroups(t *testing.T
 	apply, _ := tlsConfigFromProfileSpec(profile)
 	cfg := &tls.Config{}
 	apply(cfg)
-	assert.NotEmpty(t, cfg.CurvePreferences, "Intermediate profile groups must map to CurvePreferences on TLS servers and clients")
+	assert.NotEmpty(
+		t,
+		cfg.CurvePreferences,
+		"Intermediate profile groups must map to CurvePreferences on TLS servers and clients",
+	)
 }
